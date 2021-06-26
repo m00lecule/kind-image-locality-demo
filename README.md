@@ -1,11 +1,61 @@
 # kind-image-locality-demo
 
+na podstawie [artykułu](https://www.usenix.org/system/files/hotedge20_paper_fu.pdf) - _"Fast and Efficient Container Startup at the Edge via Dependency Scheduling"_
+
 ## requirements
 - kind    `0.11.0`
 - docker  `20.10.7`
 - kubectl `1.17.3`
 
-# intro
+# wstęp
+
+Podstawowym zamysłem konteneryzacji jest umieszczenie aplikacji, jej procesów, konfiguracji i zależności w wirtualnej jednostce zwanej kontenerem. Z punktu widzenia aplikacji, kontenery te są odrębnymi i niezależnymi instancjami środowiska uruchomieniowego. 
+
+
+Podstawową zależnością wymaganą do uruchomienia kontenera jest jego **obraz**, przechowywany w lokalnym systemie plików. Obrazy bazują na **union file system**, gdzie każda warstwa enkapsuluje zbiór plików i katalogów, które są wymagane przez kontener w momencie startu. Warstwy są identyfikowane przez **digest** - hash z zawartości plików w warstwie. Ten mechanizm umożliwia zmianę nazwy obrazu, bez inwalidacji cachowanych dotąd plików - co jest dobrą praktyką w redukowaniu wielkości redundantnych plików oraz niepotrzebnych pobrań.
+
+![](img/sharing-layers.jpg)
+
+Kubernetes umożliwia kontrolę dużej liczby instancji skonteneryzowanych aplikacji. Problem pojawia się jednak w sytuacji, kiedy mamy wiele kontenerów, a ograniczoną liczbę workerów, lub poszczególne kontenery nie obciążają w równym stopniu poszczególnych node-ów. W przypadku wystąpienia takiej sytuacji, następuje zmiana kontekstu, tzn. wykorzystanie noda, przez inny kontener. Operacje zmiany kontekstu są drogie. Zwykle wymaga ona przeładowania wszystkich zależności. Zdarzają się jednakże sytuacje, kiedy więcej niż jeden kontener wykorzystuje ten sam obraz systemu. Załóżmy zatem, że mamy 2 nody (A B) oraz 5 kontenerów posiadających kolejno obrazy (a a a b b). Ponadto upraszczając, każdy z kontenerów wykorzystuje taką samą ilość zasobów. W sytuacji następującej:
+
+```
+A -> a b a
+B -> a b
+```
+
+mamy aż **5** ładowań środowiska oraz **4** oczekiwania na pobranie obrazów.
+
+Bardzo często będzie to wymagało pobrania zależności z jakiegoś serwera, co dodatkowo wydłuży czas. Jeżeli natomiast posegregowali byśmy zadania w następujący sposób:
+
+```
+A -> a a a
+B -> b b
+```
+
+uzyskujemy dalej **5** ładowania środowiska oraz _zaledwie_ **2** pobrania obrazów.
+
+Funkcjonalność ta została zaimplementowana w związku z popytem na technologie typu **serverless** - [AWS Lambda](https://aws.amazon.com/blogs/compute/container-reuse-in-lambda/), gdzie unikanie niepotrzebnych pobrań może zaoszczędzić tysiące dolarów poprzez oszczędne wykorzystanie storage'u oraz redukcje wielkości ruchu sieciowego. Dodatkowo zadania tego typu cechują się _krótkim czasiem wykonania_ - często przygotowanie środowiska trwa dłużej niż samo wykonanie.
+
+W ramach ćwiczenia należy dokonać analizy dostępnych rozwiązań przydziału zasobów na lokalnym środowisku.
+
+# `ImageLocality`
+
+Wraz z [MR](https://github.com/kubernetes/kubernetes/pull/68081) została dodana do domyślnego schedulera polityka - `ImageLocality`, która faworyzacje nody, posiadające lokalnie wymagane zależności Poda- w celu zmiejszenia overheadu związanego ze pobraniem konteneru podczas startu.
+
+Do komponentów systemowych kubernetesa zostały wprowadzone następujące zmiany:
+
+![](img/arch.png)
+
+**kubelet** - jego funkcjonalność została rozszerzona o moduł, którego zadaniem jest logowanie informacji o warstwach/obrazach na worker nodach. Digest oraz rozmiary warstw są cyklicznie komunikowane do API-Servera. W przypadku przepełnienia filesystemu na nodzie, jego zadaniem jest usunięcie nadmiarowych obrazów.
+
+**API-Server** - został rozszerzony o możliwość wykonania RPC, dzięki czemu kubelet, może persystować informacje o stanie obrazów i warstw w nodach w etcd.
+
+**scheduler** - implementuje dodatkowy plugin, który wykonuje dwie niestandardowe operacje:
+
+- mapowanie kolejkowanego poda na warstwy jego obrazu oraz digest - informacje o każdym obrazie są cachowane. Zbieranie takich informacji odseparowywuje problem od nazwy obrazu - potencjalnie obraz o takiej samej zawartości może zawierać kilka aliasów
+- selekcja node’a, który posiada jak największy podzbiór (pod względem rozmiaru na dysku) pasujących warstw. 
+
+## cel projektu
 
 Naszym zadaniem będzie przetestowanie możliwości własnej konfiguracji polityki schedulera - poda z przestrzeni nazw `kube-system`, którego zadaniem jest dopisanie do nowo utworzonego manifestu poda informacji o tym na jakim nodzie ma zostać wykonany. W przypadku braku tej etykiety będzie wisiać ciągle w stanie `Pending`.
 
@@ -21,14 +71,22 @@ W przypadku manifestu w którym brakuje etykiety `schedulerName` domyślnie zost
 
 > Zadaniem schedulera jest na podstawie danych zebranych z nodów, dodać etykiete `nodeName` - zawierającą informację na którym nodzie ma wykonać się pod.
 
-### kryteria schedulera
+## polityki
+
+Nody dla podów przydzielane są na podstawie punktacji, która scheduler wylicza. W skład punktacji wchodzą: indywidualne i zbiorowe wymagania dotyczące zasobów, ograniczenia sprzętowe, oprogramowanie, lokalizacje danych oraz zakłócenia między obciążeniami i tak dalej. Odbywa się to w 2 krokowej operacji: `Filtering` oraz `Scoring`.
+Etap filtrowania szuka zestaw nodów, do których można zaaplikować poda. Jeśli lista węzłów po filtrowaniu jest pusta to w tym momencie nie można zaaplikować nigdzie noda. Następnie jest realizowany etap wyceniania, który porządkuje tą listę wyceniając każdego noda. Następnie pod jest przypisywany do węzła o najwyższej wycenie.
+Istnieją dwa sposoby na konfiguracje zachowania etapów:
+
+- `Scheduling Policies` -  pozwala na konfiguracje predykatów dla filtrowania oraz priorytetów dla wyceny.
+- `Scheduling Profiles` - pozwala na konfiguracje pluginów, które implementują dodatkowe etapy.
+
 
 Domyślnie scheduler oblicza score każdego noda na podstawie następujących [kryteriów](https://kubernetes.io/docs/reference/scheduling/policies/), jednak my zajmiemy się jednym z nich a mianowicie:
 
 > **ImageLocalityPriority**: faworyzuje nody, które mają lokalnie zaciągnięte obrazy kontenerów
 
 
-### manifesty podów systemowych
+### manifesty podów z `kube-system` ns
 Manifesty podów systemowych znajdują się w katalogu `/etc/kubernetes/manifests` na master nodach
 
 `kind` umożliwia edycję tego manifestu za pomocą definicji manifestu klastra
@@ -59,7 +117,7 @@ Należy tutaj zwrócić uwagę na dwa pola:
  - `config` - scieżka do manifestu zawierającego zasób `KubeSchedulerConfiguration`, który umożliwi nam konfiguracje polityki schedulowania
 
 ### `KubeSchedulerConfiguration`
- Jest abstrakcyjnym zasobem, umożliwiającym kontrolę kryteriów algorytmu liczącego score dla Noda. W naszym przypadku chcemy wyłączyć wszystkie dyśle kryteria oraz pozostawić jedynie `ImageLocality` z wysokim współczynnikiem
+ Jest abstrakcyjnym zasobem, umożliwiającym kontrolę kryteriów algorytmu liczącego score dla Noda. W naszym przypadku chcemy wyłączyć wszystkie domyślne kryteria oraz pozostawić jedynie `ImageLocality` z wysokim współczynnikiem. Jego definicja docelowo ma znaleźć się pod ścieżką `/etc/kubernetes/scheduler-config.conf` na master nodzie.
 
 ```diff
 kind: KubeSchedulerConfiguration
@@ -75,11 +133,11 @@ profiles:
 +           weight: 1000
 ```
 
-# `demo`
+# demo
 
-Poniższe ćwiczenie będziemy przeprowadzać na [kindzie](https://kind.sigs.k8s.io/docs/user/quick-start/). Jest to klaster kubernetesa bazujący na obrazach dockerowych.
+Poniższe ćwiczenie będziemy przeprowadzać na [kindzie](https://kind.sigs.k8s.io/docs/user/quick-start/). Jest to narzędzie stawiające lokalny klaster kubernetesa bazujący na obrazach dockerowych.
 
-Aby utworzyć nowy klaster wykonaj:
+## Utworzenie klastra
 
 ```zsh
 kind create cluster --name scheduler --config=manifests/cluster-config.yml
@@ -137,7 +195,7 @@ kube-proxy-nlr6s                                  1/1     Running   0          1
 kube-proxy-nn64s                                  1/1     Running   0          124m   172.25.0.5   scheduler-control-plane   <none>           <none>
 kube-scheduler-scheduler-control-plane            1/1     Running   4          121m   172.25.0.5   scheduler-control-plane   <none>           <none>
 ```
- Warto też zauważyć że w przypadku tego klastra naszym runtime'em kontenerowym (kolumna CONTAINER-RUNTIME) jest `containerd` a nie `dockerd`. Rzutować to będzie na drobne zmiany m.in: socket do komunikacji z kenrnelem znajduje się pod ścieżką `/run/containerd/containerd.sock` a z poziomu cli będziemy wchodzić z interakcję za pomocą komendy `crictl`.
+ Warto też zauważyć że w przypadku tego klastra naszym runtime'em kontenerowym (kolumna CONTAINER-RUNTIME) jest `containerd`. Rzutuje to na drobne zmiany m.in: socket do komunikacji z kenrnelem znajduje się pod ścieżką `/run/containerd/containerd.sock` a z poziomu cli będziemy wchodzić z interakcję za pomocą komendy `crictl`.
 
 W celu wypisania wszystkich obrazów znajdujących się w kontenerze worker nodzie klastra - `schduler-worker` należy wykonac polecenie:
 ```zsh
@@ -167,7 +225,7 @@ oraz usunąć obecnego schedulera, w celu zaczytania nowej konfiguracji:
 kubectl delete pod kube-scheduler-scheduler-control-plane -n kube-system 
 ```
 
-W celu przetestowania działania obecnej konfiguracji należy kilkukrotnie utworzyć poda, bazującego na obrazie `busybox` edytując za każdym razem jego nazwę (tak, aby utowrzyć fizycznie kilka Podów)
+Aby przetestować poprawność działania obecnej konfiguracji należy utworzyć kilka podów, bazujących na obrazie `busybox`
 
 ```zsh
 $ kubectl apply -f manifests/busybox-pod.yaml
@@ -192,19 +250,19 @@ docker.io/library/busybox                  latest               69593048aa3ac   
 $ docker exec -it scheduler-worker crictl images | grep busybox 
 ```
 
-`logi ze schedulera`
+## logowanie score per node
 
 ```zsh
 kubectl logs kube-scheduler-scheduler-control-plane -n kube-system -f
 ```
 
-W poniższym zrzucie ekranu widać że scheduler zaczytał poprawnie nową konfigurację - w którym jedyną metryką jest `ImageLocality` jednak liczy dla niego niepoprawną wartość score - dla każdego noda jest równy `0`
+Na poniższym zrzucie ekranu widać że scheduler zaczytał poprawnie nową konfigurację - w którym jedyną metryką jest `ImageLocality` jednak liczy dla niego niepoprawną wartość score - dla każdego noda jest równa `0`.
 ![](img/score.png)
 
 ### Powodem niepowodzenia mogą być następujące czynniki 
-Za zbieranie informacji o lokalnych obrazach na worker nodach odpowiada moduł zaimplementowany w  `kubelecie`. `kind` implementuje `kubeleta` w uboższej konfiguracji - nie posiada tej funkcjonalności. Argumentem za taką decyzją był fakt, iż kontenery są to fizczynie procesy, które współdzielą ze sobą kernel - w którym znajduje się tylko jeden runtime kontenerowy. `kind` jest narzędziem, które ma tworzyć klaster działający w ramach jednego wspóldzielonego kernela, fizycznie `containerd` nie jest instalowany wewnątrz każdego kontenera, tylko jest strzykiwany poprzez `socket` - `/run/containerd/containerd.sock` który wchodzi w interakcję z właściwym demonem z kernela.
+Za zbieranie informacji o lokalnych obrazach na worker nodach odpowiada moduł zaimplementowany w  `kubelecie`. `kind` implementuje `kubeleta` w uboższej konfiguracji - nie posiada tej funkcjonalności. Argumentem za taką decyzją był fakt, iż kontenery są to fizczynie procesy, które współdzielą ze sobą kernel - w którym znajduje się tylko jeden runtime kontenerowy. `kind` jest narzędziem, które ma tworzyć klaster działający w ramach jednego wspóldzielonego kernela, fizycznie `containerd` nie jest instalowany wewnątrz każdego kontenera, tylko jest strzykiwany poprzez `socket` - `/run/containerd/containerd.sock` który wchodzi w interakcję z właściwym demonem z kernela, więc koniec końców wszystko i tak pozostaje lokalnie.
 
-# dalsze prace
+# kontynuacja
 
 W zaistniałej sytuacji chcemy zaproponować następujący workaround - DaemonSet, który będzie cykliczne monitorował stan kontenerów `kinda` oraz logował te informacje do `etcd`.
 
@@ -244,3 +302,11 @@ spec:
 ```
 
 Zwrócić w nim należy na dwie ważne sekcje - przekazanie do wnętrza kontenera socketu z worker node'a oraz cyklicznie wypisywanie na stdout listy dostępnych lokalnie obrazów kontenerów.
+
+# Autorzy
+
+- Michał Dygas
+- Andrzej Kołodziej
+- Marcin Hajdo
+- Tomasz Markiewicz
+- Wojtek Rębisz

@@ -7,7 +7,7 @@
 
 # intro
 
-Naszym zadaniem będzie przetestowanie możliwości własnej konfiguracji polityki schedulera - poda z przestrzeni nazw `kube-system`, którego zadaniem jest dopisanie do nowo utworzonego manifestu poda informacji o tym na jakim nodzie ma zostać wykonany. W przypadku braku tego klucza pod będzie ciągle w stanie `Pending`.
+Naszym zadaniem będzie przetestowanie możliwości własnej konfiguracji polityki schedulera - poda z przestrzeni nazw `kube-system`, którego zadaniem jest dopisanie do nowo utworzonego manifestu poda informacji o tym na jakim nodzie ma zostać wykonany. W przypadku braku tej etykiety będzie wisiać ciągle w stanie `Pending`.
 
 ```diff
 spec:
@@ -19,7 +19,7 @@ spec:
 
 W przypadku manifestu w którym brakuje etykiety `schedulerName` domyślnie zostanie przypisany systemowy scheduler - `default-scheduler`.
 
-Zadaniem schedulera jest na podstawie danych zebranych z nodów, dodać etykiete `nodeName` - zawierającą informację na którym nodzie ma wykonać się pod.
+> Zadaniem schedulera jest na podstawie danych zebranych z nodów, dodać etykiete `nodeName` - zawierającą informację na którym nodzie ma wykonać się pod.
 
 ### kryteria schedulera
 
@@ -58,8 +58,8 @@ Należy tutaj zwrócić uwagę na dwa pola:
  - `v`(erbose) - w celu wyświetlenia wartości score dla poda należy zwięszkyć poziom logowania `kube-schedulera` do 15
  - `config` - scieżka do manifestu zawierającego zasób `KubeSchedulerConfiguration`, który umożliwi nam konfiguracje polityki schedulowania
 
-### KubeSchedulerConfiguration
- KubeSchedulerConfiguration jest abstrakcyjnym zasobem, umożliwiającym kontrolę kryteriów algorytmu liczącego score dla Noda. W naszym przypadku chcemy wyłączyć wszystkie dyśle kryteria oraz pozostawić jedynie `ImageLocality` z wysokim współczynnikiem
+### `KubeSchedulerConfiguration`
+ Jest abstrakcyjnym zasobem, umożliwiającym kontrolę kryteriów algorytmu liczącego score dla Noda. W naszym przypadku chcemy wyłączyć wszystkie dyśle kryteria oraz pozostawić jedynie `ImageLocality` z wysokim współczynnikiem
 
 ```diff
 kind: KubeSchedulerConfiguration
@@ -75,17 +75,17 @@ profiles:
 +           weight: 1000
 ```
 
-# tutorial
+# `demo`
 
 Poniższe ćwiczenie będziemy przeprowadzać na [kindzie](https://kind.sigs.k8s.io/docs/user/quick-start/). Jest to klaster kubernetesa bazujący na obrazach dockerowych.
 
 Aby utworzyć nowy klaster wykonaj:
 
 ```zsh
-kind create cluster --name scheduler --config=cluster-config.yml
+kind create cluster --name scheduler --config=manifests/cluster-config.yml
 ```
 
-Poprawnie stworzony klaster powinien dać następujący output:
+Poprawnie stworzony klaster wygląda następująco:
 
 ```zsh
 $ kind get clusters
@@ -98,7 +98,46 @@ scheduler-worker2         Ready    <none>                 31m   v1.21.1   Ubuntu
 scheduler-worker3         Ready    <none>                 31m   v1.21.1   Ubuntu 20.10   5.8.0-59-generic   containerd://1.5.1
 ```
 
-W tej konfiguracji stworzony klaster posiada tylko jednego master noda o nazwie `scheduler-control-plane` oraz 3 worker node'y. Warto też zauważyć że w przypadku tego setupu naszym runtime'em kontenerowym jest `containerd` a nie `dockerd` - rzutować to będzie na drobne zmiany m.in: socket do komunikacji z demonek w kernelu znajduje się pod ścieżką `/run/containerd/containerd.sock` a z poziomu cli będziemy wchodzić z interakcję za pomocą komendy `crictl`.
+```yaml
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+  (...)
+  - role: worker
+  - role: worker
+  - role: worker
+```
+
+W tej konfiguracji stworzony klaster posiada  następującą konfigurację:
+- 3 worker node'y dla pozostałych przestrzenii nazw
+- 1 master node o nazwie `scheduler-control-plane` - wykonywane na nim są kontenery z przestrzeni `kube-system` (oprócz kube-proxy oraz CNI)
+  - apiserver - centralne API klastra
+  - control-manager - control loop, którego zadaniem jest wprowadzanie zmian w celu utrzymania spójności z zaratościa etcd 
+  - coredns - DNS discovery
+  - scheduler - przydział podów na nody
+  - etcd - storage przechowywujący stan całego klastra
+  - kindnet - CNI (DaemonSet)
+ 
+```zsh
+kubectl get pods -n kube-system -o wide
+NAME                                              READY   STATUS    RESTARTS   AGE    IP           NODE                      NOMINATED NODE   READINESS GATES
+coredns-558bd4d5db-4dtv4                          1/1     Running   0          124m   10.244.0.2   scheduler-control-plane   <none>           <none>
+coredns-558bd4d5db-86vwx                          1/1     Running   0          124m   10.244.1.2   scheduler-worker          <none>           <none>
+etcd-scheduler-control-plane                      1/1     Running   0          124m   172.25.0.5   scheduler-control-plane   <none>           <none>
+kindnet-9gfqw                                     1/1     Running   0          123m   172.25.0.3   scheduler-worker3         <none>           <none>
+kindnet-b6zjz                                     1/1     Running   0          123m   172.25.0.2   scheduler-worker2         <none>           <none>
+kindnet-btjds                                     1/1     Running   0          123m   172.25.0.4   scheduler-worker          <none>           <none>
+kindnet-xq77n                                     1/1     Running   0          124m   172.25.0.5   scheduler-control-plane   <none>           <none>
+kube-apiserver-scheduler-control-plane            1/1     Running   0          124m   172.25.0.5   scheduler-control-plane   <none>           <none>
+kube-controller-manager-scheduler-control-plane   1/1     Running   0          124m   172.25.0.5   scheduler-control-plane   <none>           <none>
+kube-proxy-b5tjz                                  1/1     Running   0          123m   172.25.0.2   scheduler-worker2         <none>           <none>
+kube-proxy-gds46                                  1/1     Running   0          123m   172.25.0.3   scheduler-worker3         <none>           <none>
+kube-proxy-nlr6s                                  1/1     Running   0          123m   172.25.0.4   scheduler-worker          <none>           <none>
+kube-proxy-nn64s                                  1/1     Running   0          124m   172.25.0.5   scheduler-control-plane   <none>           <none>
+kube-scheduler-scheduler-control-plane            1/1     Running   4          121m   172.25.0.5   scheduler-control-plane   <none>           <none>
+```
+ Warto też zauważyć że w przypadku tego klastra naszym runtime'em kontenerowym (kolumna CONTAINER-RUNTIME) jest `containerd` a nie `dockerd`. Rzutować to będzie na drobne zmiany m.in: socket do komunikacji z kenrnelem znajduje się pod ścieżką `/run/containerd/containerd.sock` a z poziomu cli będziemy wchodzić z interakcję za pomocą komendy `crictl`.
 
 W celu wypisania wszystkich obrazów znajdujących się w kontenerze worker nodzie klastra - `schduler-worker` należy wykonac polecenie:
 ```zsh
@@ -122,16 +161,10 @@ Następnie należy przekopiwać do mastera naszą nową konfigurację schedulera
 docker cp scheduler-config.conf scheduler-control-plane:/etc/kubernetes/scheduler-config.conf
 ```
 
-a następnie w celu zaczytania nowej konfiguracji należy usunąć obecnego schedulera:
+oraz usunąć obecnego schedulera, w celu zaczytania nowej konfiguracji:
 
 ```zsh
 kubectl delete pod kube-scheduler-scheduler-control-plane -n kube-system 
-```
-
-w celu zobaczenia logów dotyczących schedulera należy konać polecenie:
-
-```zsh
-kubectl logs kube-scheduler-scheduler-control-plane -n kube-system -f
 ```
 
 W celu przetestowania działania obecnej konfiguracji należy kilkukrotnie utworzyć poda, bazującego na obrazie `busybox` edytując za każdym razem jego nazwę (tak, aby utowrzyć fizycznie kilka Podów)
@@ -140,9 +173,8 @@ W celu przetestowania działania obecnej konfiguracji należy kilkukrotnie utwor
 $ kubectl apply -f manifests/busybox-pod.yaml
 pod/busybox-sleep-0 changed
 ```
-następnie edytować pole `metadata.name` do busybox-sleep-11100 i operację powtórzyć kilkukrotnie
+następnie edytować pole `metadata.name` na przykładowo `busybox-sleep-11100`. Operację powtórzyć kilkukrotnie, aby końcowo uzyskać kilka podów z identycznym obrazie w manifeście: 
 
-Aby docelowo utworzyć kilka podów z tego samego obrazu: 
 ```zsh
 $ kubectl get pods -o wide
 NAME                  READY   STATUS    RESTARTS   AGE   IP           NODE                NOMINATED NODE
@@ -151,7 +183,7 @@ busybox-sleep-1110    1/1     Running   0          67m   10.244.2.2   scheduler-
 busybox-sleep-11100   1/1     Running   0          13s   10.244.3.3   scheduler-worker3   <none> 
 ```
 
-Oraz weryfikuję czy dany obraz znajduje się na właścicywch nodach:
+weryfikacja obrazu na workernodach:
 ```zsh
 $ docker exec -it scheduler-worker2 crictl images | grep busybox
 docker.io/library/busybox                  latest               69593048aa3ac       771kB
@@ -160,16 +192,21 @@ docker.io/library/busybox                  latest               69593048aa3ac   
 $ docker exec -it scheduler-worker crictl images | grep busybox 
 ```
 
-W poniższym zrzucie ekranu widać że scheduler zaczytał poprawnie nową konfigurację - w którym jedyną metryką jest `ImageLocality` jednak liczy dla niego niepoprawny score - dla każdego noda jest równy 0
+`logi ze schedulera`
+
+```zsh
+kubectl logs kube-scheduler-scheduler-control-plane -n kube-system -f
+```
+
+W poniższym zrzucie ekranu widać że scheduler zaczytał poprawnie nową konfigurację - w którym jedyną metryką jest `ImageLocality` jednak liczy dla niego niepoprawną wartość score - dla każdego noda jest równy `0`
 ![](img/score.png)
 
-Powodem mogą być następujące czynniki
-- Za zbieranie informacji o lokalnych obrazach na worker nodach opowiada `kubelet`. W przypadku implementacji `kinda` jest w uboższej konfiguracji - nie posiada tej funkcjonalności. Argumentem za takim scenariuszej jest fakt, iż kontenery są to fizczynie procesy, które współdzielą ze sobą kernel - w którym znajduje się tylko jeden runtime kontenerowy. Fizczynie `containerd` nie jest instalowany wewnątrz każdego kontenerea, tylko jest strzykiwany poprzez `socket` - `/run/containerd/containerd.sock` w który wchodzi w interakcję z właściwym demonem z przestrzeni jądra.
+### Powodem niepowodzenia mogą być następujące czynniki 
+Za zbieranie informacji o lokalnych obrazach na worker nodach odpowiada moduł zaimplementowany w  `kubelecie`. `kind` implementuje `kubeleta` w uboższej konfiguracji - nie posiada tej funkcjonalności. Argumentem za taką decyzją był fakt, iż kontenery są to fizczynie procesy, które współdzielą ze sobą kernel - w którym znajduje się tylko jeden runtime kontenerowy. `kind` jest narzędziem, które ma tworzyć klaster działający w ramach jednego wspóldzielonego kernela, fizycznie `containerd` nie jest instalowany wewnątrz każdego kontenera, tylko jest strzykiwany poprzez `socket` - `/run/containerd/containerd.sock` który wchodzi w interakcję z właściwym demonem z kernela.
 
+# dalsze prace
 
-# next steps
-
-W zaistniałej sytuacji chcemy zaproponować następujący workaround - DemonSet, który będzie cykliczne monitorował stan kontenerów `kinda` oraz logowanie tych informacji do `etcd`
+W zaistniałej sytuacji chcemy zaproponować następujący workaround - DaemonSet, który będzie cykliczne monitorował stan kontenerów `kinda` oraz logował te informacje do `etcd`.
 
 Przykładowy manifest:
 
@@ -206,4 +243,4 @@ spec:
               readOnly: false
 ```
 
-Zwrócić w nim należy na dwie ważne sekcje - przekazanie do wnętrza kontenera socketu z worker node'a oraz cyklicznie wypisywanie na stdout listy wszystkich kontenerów.
+Zwrócić w nim należy na dwie ważne sekcje - przekazanie do wnętrza kontenera socketu z worker node'a oraz cyklicznie wypisywanie na stdout listy dostępnych lokalnie obrazów kontenerów.

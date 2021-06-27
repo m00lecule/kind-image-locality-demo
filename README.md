@@ -2,6 +2,8 @@
 
 na podstawie [artykułu](https://www.usenix.org/system/files/hotedge20_paper_fu.pdf) - _"Fast and Efficient Container Startup at the Edge via Dependency Scheduling"_
 
+[repozytorium](https://github.com/m00lecule/kind-image-locality-demo) zawierające manifesty na potrzeby ćwiczenia 
+
 ## requirements
 - kind    `0.11.0`
 - docker  `20.10.7`
@@ -137,6 +139,11 @@ profiles:
 
 Poniższe ćwiczenie będziemy przeprowadzać na [kindzie](https://kind.sigs.k8s.io/docs/user/quick-start/). Jest to narzędzie stawiające lokalny klaster kubernetesa bazujący na obrazach dockerowych.
 
+Pobierz repozytorium:
+```zsh
+git clone https://github.com/m00lecule/kind-image-locality-demo.git
+```
+
 ## Utworzenie klastra
 
 ```zsh
@@ -216,7 +223,7 @@ k8s.gcr.io/pause                           3.4.1                0f8457a4c2eca   
 Następnie należy przekopiwać do mastera naszą nową konfigurację schedulera
 
 ```zsh
-docker cp scheduler-config.conf scheduler-control-plane:/etc/kubernetes/scheduler-config.conf
+docker cp manifests/scheduler-config.conf scheduler-control-plane:/etc/kubernetes/scheduler-config.conf
 ```
 
 oraz usunąć obecnego schedulera, w celu zaczytania nowej konfiguracji:
